@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arihant Trading Company Delivery App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        .container {
+            max-width: 600px;
+            margin: 2rem auto;
+            padding: 1.5rem;
+            background-color: #ffffff;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        .btn-primary {
+            background-color: #4f46e5;
+            color: #ffffff;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            transition: background-color 0.3s;
+        }
+        .btn-primary:hover {
+            background-color: #4338ca;
+        }
+        .btn-secondary {
+            background-color: #e5e7eb;
+            color: #4b5563;
+            padding: 0.75rem 1.5rem;
+            border-radius: 0.5rem;
+            transition: background-color 0.3s;
+        }
+        .btn-secondary:hover {
+            background-color: #d1d5db;
+        }
+        .input-field {
+            padding: 0.75rem;
+            border-radius: 0.5rem;
+            border: 1px solid #d1d5db;
+        }
+        .modal {
+            background-color: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(5px);
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .modal-content {
+            background-color: #ffffff;
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.2);
+            max-width: 400px;
+            width: 90%;
+            animation: fadeIn 0.3s ease-in-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        canvas {
+            border: 1px solid #d1d5db;
+            touch-action: none;
+            cursor: crosshair;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
+
+    <div id="app" class="w-full">
+        <!-- Main application container -->
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, query, onSnapshot, doc, updateDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment.
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        const app = document.getElementById('app');
+        let db;
+        let auth;
+        let deliveries = [];
+        let activeDelivery = null;
+        let userId;
+        let canvas, ctx;
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        // --- Utility Functions ---
+
+        /**
+         * Generates a random 6-digit OTP.
+         * @returns {string} The generated OTP.
+         */
+        function generateOTP() {
+            return Math.floor(100000 + Math.random() * 900000).toString();
+        }
+
+        /**
+         * Initializes Firebase and sets up the real-time data listener.
+         */
+        async function initializeAndAuthenticate() {
+            try {
+                if (firebaseConfig) {
+                    const firebaseApp = initializeApp(firebaseConfig);
+                    db = getFirestore(firebaseApp);
+                    auth = getAuth(firebaseApp);
+                    console.log("Firebase initialized.");
+
+                    onAuthStateChanged(auth, async (user) => {
+                        if (user) {
+                            userId = user.uid;
+                            console.log("User authenticated:", userId);
+                            listenForDeliveries();
+                        } else {
+                            // Sign in anonymously if no auth token is provided.
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                        }
+                    });
+                } else {
+                    console.error("Firebase config is missing. The app will run in demo mode with temporary data.");
+                    renderApp(); // Render the app with no data if Firebase config is not available.
+                }
+            } catch (error) {
+                console.error("Error initializing Firebase:", error);
+            }
+        }
+
+        /**
+         * Listens for real-time updates to the deliveries collection.
+         */
+        function listenForDeliveries() {
+            // For this public demo, we'll store data in a public collection.
+            const deliveriesCollection = collection(db, `artifacts/${appId}/public/data/deliveries`);
+            const q = query(deliveriesCollection);
+
+            // Set up a real-time listener.
+            onSnapshot(q, (querySnapshot) => {
+                deliveries = [];
+                querySnapshot.forEach((doc) => {
+                    deliveries.push({ id: doc.id, ...doc.data() });
+                });
+                console.log("Deliveries updated:", deliveries);
+                renderApp();
+            }, (error) => {
+                console.error("Error listening to deliveries:", error);
+            });
+        }
+
+        /**
+         * Initializes the signature pad canvas.
+         */
+        function initSignaturePad() {
+            canvas = document.getElementById('signature-pad');
+            if (!canvas) return;
+
+            ctx = canvas.getContext('2d');
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 2;
+
+            function getCoords(e) {
+                const rect = canvas.getBoundingClientRect();
+                if (e.touches) {
+                    return {
+                        x: e.touches[0].clientX - rect.left,
+                        y: e.touches[0].clientY - rect.top,
+                    };
+                }
+                return {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top,
+                };
+            }
+
+            const draw = (e) => {
+                if (!isDrawing) return;
+                const { x, y } = getCoords(e);
+                ctx.beginPath();
+                ctx.moveTo(lastX, lastY);
+                ctx.lineTo(x, y);
+                ctx.stroke();
+                [lastX, lastY] = [x, y];
+            };
+
+            const startDrawing = (e) => {
+                e.preventDefault();
+                isDrawing = true;
+                const { x, y } = getCoords(e);
+                [lastX, lastY] = [x, y];
+            };
+
+            const stopDrawing = () => {
+                isDrawing = false;
+            };
+
+            canvas.addEventListener('mousedown', startDrawing);
+            canvas.addEventListener('mousemove', draw);
+            canvas.addEventListener('mouseup', stopDrawing);
+            canvas.addEventListener('mouseout', stopDrawing);
+
+            // Touch events
+            canvas.addEventListener('touchstart', startDrawing);
+            canvas.addEventListener('touchmove', draw);
+            canvas.addEventListener('touchend', stopDrawing);
+        }
+
+        /**
+         * Displays the OTP verification modal for a specific delivery.
+         * @param {string} deliveryId - The ID of the delivery to complete.
+         */
+        async function handleCompleteDelivery(deliveryId) {
+            const deliveryRef = doc(db, `artifacts/${appId}/public/data/deliveries`, deliveryId);
+            const deliverySnap = await getDoc(deliveryRef);
+            const delivery = deliverySnap.data();
+
+            if (!delivery || delivery.status === 'Delivered') return;
+
+            // Generate and store the OTP in the database.
+            const otp = generateOTP();
+            await updateDoc(deliveryRef, { otp: otp });
+
+            // Set the active delivery for the modal.
+            activeDelivery = { id: deliverySnap.id, ...delivery, otp: otp };
+            renderApp();
+            setTimeout(initSignaturePad, 10);
+        }
+
+        /**
+         * Handles the OTP verification and signature capture process.
+         * @param {Event} e - The form submission event.
+         */
+        async function handleVerifyOTP(e) {
+            e.preventDefault();
+            const enteredOTP = e.target.otp.value;
+            if (!activeDelivery) return;
+
+            const deliveryRef = doc(db, `artifacts/${appId}/public/data/deliveries`, activeDelivery.id);
+            const deliverySnap = await getDoc(deliveryRef);
+            const deliveryData = deliverySnap.data();
+
+            if (enteredOTP === deliveryData.otp) {
+                // Get the signature image data as a Base64 string.
+                const signatureData = canvas.toDataURL();
+
+                // Update delivery status, clear OTP, and save signature in the database.
+                await updateDoc(deliveryRef, { 
+                    status: 'Delivered', 
+                    otp: null,
+                    signature: signatureData
+                });
+                activeDelivery = null;
+                renderApp();
+            } else {
+                document.getElementById('otp-error').classList.remove('hidden');
+            }
+        }
+
+        /**
+         * Closes the OTP verification modal.
+         */
+        function closeModal() {
+            activeDelivery = null;
+            renderApp();
+        }
+
+        /**
+         * Renders the OTP verification modal content.
+         * @returns {string} The HTML string for the modal.
+         */
+        function renderModal() {
+            if (!activeDelivery) return '';
+
+            return `
+                <div class="modal z-50" aria-modal="true" role="dialog">
+                    <div class="modal-content text-center">
+                        <h2 class="text-2xl font-semibold mb-4 text-gray-800">Verify Delivery</h2>
+                        <p class="mb-2 text-gray-600">Customer: <span class="font-medium">${activeDelivery.customerName}</span></p>
+                        <p class="mb-4 text-gray-600">Address: <span class="font-medium">${activeDelivery.address}</span></p>
+                        
+                        <div class="bg-indigo-50 p-3 rounded-lg border border-indigo-200 mb-4">
+                            <p class="text-sm text-indigo-700 font-semibold">Simulated OTP for demonstration:</p>
+                            <p class="text-2xl font-bold tracking-widest text-indigo-900">${activeDelivery.otp}</p>
+                        </div>
+
+                        <form id="otp-form" class="space-y-4">
+                            <div>
+                                <label for="otp" class="sr-only">Enter OTP</label>
+                                <input type="number" id="otp" name="otp" placeholder="Enter 6-digit OTP" class="input-field w-full text-center" required minlength="6" maxlength="6" />
+                            </div>
+                            <p id="otp-error" class="text-red-500 font-medium hidden">Incorrect OTP. Please try again.</p>
+                            
+                            <h3 class="text-lg font-semibold mt-6 mb-2">Customer Signature</h3>
+                            <canvas id="signature-pad" width="350" height="150" class="rounded-lg w-full"></canvas>
+
+                            <div class="flex flex-col space-y-3 mt-4">
+                                <button type="submit" class="w-full btn-primary font-medium">Verify & Complete</button>
+                                <button type="button" onclick="closeModal()" class="w-full btn-secondary font-medium">Cancel</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+
+        /**
+         * Renders the main delivery list dashboard.
+         * @returns {string} The HTML string for the dashboard.
+         */
+        function renderDashboard() {
+            // Sort deliveries to show "Pending" first.
+            const sortedDeliveries = [...deliveries].sort((a, b) => {
+                if (a.status === 'Pending' && b.status !== 'Pending') return -1;
+                if (a.status !== 'Pending' && b.status === 'Pending') return 1;
+                return 0;
+            });
+
+            const deliveryListHtml = sortedDeliveries.map(delivery => `
+                <li class="flex items-center justify-between p-4 bg-gray-50 border-b border-gray-200 last:border-b-0 rounded-lg shadow-sm mb-2">
+                    <div class="flex-1">
+                        <p class="font-semibold text-gray-900">${delivery.customerName}</p>
+                        <p class="text-sm text-gray-500">${delivery.address}</p>
+                    </div>
+                    <div class="flex items-center">
+                        ${delivery.status === 'Pending' ? `
+                            <button onclick="handleCompleteDelivery('${delivery.id}')" class="btn-primary text-sm font-medium ml-4">Complete Delivery</button>
+                        ` : `
+                            <span class="px-3 py-1 text-sm font-semibold text-green-700 bg-green-100 rounded-full">Delivered</span>
+                        `}
+                    </div>
+                </li>
+            `).join('');
+
+            return `
+                <div class="container">
+                    <div class="flex items-center justify-between mb-6">
+                        <h1 class="text-3xl font-bold text-gray-800">Arihant Trading Company</h1>
+                        <p class="text-sm text-gray-500">User ID: ${userId}</p>
+                    </div>
+                    <p class="text-gray-500 mb-4 text-center text-sm">Serving Shirur, Pune, Maharashtra, India</p>
+                    <ul class="space-y-3">
+                        ${deliveryListHtml.length > 0 ? deliveryListHtml : '<p class="text-center text-gray-500">No deliveries found.</p>'}
+                    </ul>
+                </div>
+                ${renderModal()}
+            `;
+        }
+
+        /**
+         * The main render function that updates the entire UI.
+         */
+        function renderApp() {
+            if (deliveries) {
+                app.innerHTML = renderDashboard();
+                if (activeDelivery) {
+                    document.getElementById('otp-form').addEventListener('submit', handleVerifyOTP);
+                }
+            }
+        }
+
+        // Initial render
+        initializeAndAuthenticate();
+    </script>
+</body>
+</html>
